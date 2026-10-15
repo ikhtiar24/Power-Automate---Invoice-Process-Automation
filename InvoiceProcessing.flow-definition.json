@@ -1,0 +1,365 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "$connections": {
+      "defaultValue": {},
+      "type": "Object"
+    },
+    "$authentication": {
+      "defaultValue": {},
+      "type": "SecureObject"
+    }
+  },
+  "triggers": {
+    "When_a_new_email_arrives": {
+      "type": "OpenApiConnectionNotification",
+      "inputs": {
+        "host": {
+          "connectionName": "shared_office365",
+          "operationId": "OnNewEmailV3"
+        },
+        "parameters": {
+          "importance": "Any",
+          "hasAttachments": true,
+          "includeAttachments": true,
+          "folderPath": "Inbox",
+          "subjectFilter": "Invoice"
+        }
+      },
+      "splitOn": "@triggerOutputs()?['body/value']",
+      "metadata": {
+        "operationMetadataId": "trigger-email"
+      }
+    }
+  },
+  "actions": {
+    "Init_RunContext": {
+      "runAfter": {},
+      "type": "InitializeVariable",
+      "inputs": {
+        "variables": [
+          {
+            "name": "RunContext",
+            "type": "object",
+            "value": {
+              "runId": "@workflow()['run']['name']",
+              "stage": "started"
+            }
+          }
+        ]
+      }
+    },
+    "Try": {
+      "runAfter": {
+        "Init_RunContext": [
+          "Succeeded"
+        ]
+      },
+      "type": "Scope",
+      "actions": {
+        "Filter_PDF_attachments": {
+          "runAfter": {},
+          "type": "Query",
+          "inputs": {
+            "from": "@triggerOutputs()?['body/attachments']",
+            "where": "@endsWith(toLower(item()?['name']), '.pdf')"
+          }
+        },
+        "For_each_invoice_PDF": {
+          "runAfter": {
+            "Filter_PDF_attachments": [
+              "Succeeded"
+            ]
+          },
+          "type": "Foreach",
+          "foreach": "@body('Filter_PDF_attachments')",
+          "runtimeConfiguration": {
+            "concurrency": {
+              "repetitions": 1
+            }
+          },
+          "actions": {
+            "Extract_invoice_fields": {
+              "runAfter": {},
+              "type": "OpenApiConnection",
+              "inputs": {
+                "host": {
+                  "connectionName": "shared_cognitiveservices",
+                  "operationId": "PredictV2"
+                },
+                "parameters": {
+                  "modelId": "@parameters('ap_InvoiceModelId')",
+                  "request/document": "@items('For_each_invoice_PDF')?['contentBytes']"
+                }
+              }
+            },
+            "Confidence_check": {
+              "runAfter": {
+                "Extract_invoice_fields": [
+                  "Succeeded"
+                ]
+              },
+              "type": "If",
+              "expression": {
+                "greaterOrEquals": [
+                  "@body('Extract_invoice_fields')?['responsev2']?['predictionOutput']?['confidence']",
+                  "@parameters('ap_ConfidenceThreshold')"
+                ]
+              },
+              "actions": {
+                "Upsert_invoice_row": {
+                  "runAfter": {},
+                  "type": "OpenApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connectionName": "shared_commondataserviceforapps",
+                      "operationId": "CreateRecord"
+                    },
+                    "parameters": {
+                      "entityName": "ap_invoices",
+                      "item/ap_invoicenumber": "@body('Extract_invoice_fields')?['invoiceNumber']",
+                      "item/ap_amount": "@body('Extract_invoice_fields')?['totalAmount']",
+                      "item/ap_costcentre": "@body('Extract_invoice_fields')?['costCentre']",
+                      "item/ap_status": 100000000,
+                      "item/ap_confidence": "@body('Extract_invoice_fields')?['responsev2']?['predictionOutput']?['confidence']"
+                    }
+                  }
+                },
+                "Call_Resolve_Approver_child_flow": {
+                  "runAfter": {
+                    "Upsert_invoice_row": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Workflow",
+                  "inputs": {
+                    "host": {
+                      "workflowReferenceName": "ap_ResolveApprover"
+                    },
+                    "body": {
+                      "amount": "@body('Extract_invoice_fields')?['totalAmount']",
+                      "costCentre": "@body('Extract_invoice_fields')?['costCentre']"
+                    }
+                  }
+                },
+                "Approval_with_SLA_race": {
+                  "runAfter": {
+                    "Call_Resolve_Approver_child_flow": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Scope",
+                  "description": "Parallel branch: approval vs Delay Until the SLA deadline. Whichever finishes first wins.",
+                  "actions": {
+                    "Start_and_wait_for_approval": {
+                      "runAfter": {},
+                      "type": "OpenApiConnectionWebhook",
+                      "inputs": {
+                        "host": {
+                          "connectionName": "shared_approvals",
+                          "operationId": "StartAndWaitForAnApproval"
+                        },
+                        "parameters": {
+                          "approvalType": "Basic",
+                          "title": "@concat('Invoice ', body('Extract_invoice_fields')?['invoiceNumber'], ' - EUR ', body('Extract_invoice_fields')?['totalAmount'])",
+                          "assignedTo": "@body('Call_Resolve_Approver_child_flow')?['approverEmail']"
+                        }
+                      }
+                    },
+                    "Delay_until_SLA_deadline": {
+                      "runAfter": {},
+                      "type": "Wait",
+                      "inputs": {
+                        "until": {
+                          "timestamp": "@body('Call_Resolve_Approver_child_flow')?['slaDeadlineUtc']"
+                        }
+                      }
+                    }
+                  }
+                },
+                "Escalate_if_timer_won": {
+                  "runAfter": {
+                    "Approval_with_SLA_race": [
+                      "Succeeded",
+                      "TimedOut"
+                    ]
+                  },
+                  "type": "If",
+                  "expression": {
+                    "equals": [
+                      "@result('Approval_with_SLA_race')[0]['status']",
+                      "TimedOut"
+                    ]
+                  },
+                  "actions": {
+                    "Notify_manager_of_breach": {
+                      "runAfter": {},
+                      "type": "Workflow",
+                      "inputs": {
+                        "host": {
+                          "workflowReferenceName": "ap_PostTeamsCard"
+                        },
+                        "body": {
+                          "message": "SLA breached - escalating",
+                          "channelId": "@parameters('ap_FinanceTeamsChannelId')"
+                        }
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {
+                      "Switch_on_approval_outcome": {
+                        "runAfter": {},
+                        "type": "Switch",
+                        "expression": "@body('Approval_with_SLA_race')?['outcome']",
+                        "cases": {
+                          "Approve": {
+                            "case": "Approve",
+                            "actions": {
+                              "Set_status_approved": {
+                                "runAfter": {},
+                                "type": "OpenApiConnection",
+                                "inputs": {
+                                  "host": {
+                                    "connectionName": "shared_commondataserviceforapps",
+                                    "operationId": "UpdateRecord"
+                                  },
+                                  "parameters": {
+                                    "entityName": "ap_invoices",
+                                    "item/ap_status": 100000002
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "Reject": {
+                            "case": "Reject",
+                            "actions": {
+                              "Set_status_rejected": {
+                                "runAfter": {},
+                                "type": "OpenApiConnection",
+                                "inputs": {
+                                  "host": {
+                                    "connectionName": "shared_commondataserviceforapps",
+                                    "operationId": "UpdateRecord"
+                                  },
+                                  "parameters": {
+                                    "entityName": "ap_invoices",
+                                    "item/ap_status": 100000003
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "default": {
+                          "actions": {}
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "else": {
+                "actions": {
+                  "Queue_for_manual_review": {
+                    "runAfter": {},
+                    "type": "OpenApiConnection",
+                    "description": "Low confidence - a human corrects the pre-filled values instead of retyping them.",
+                    "inputs": {
+                      "host": {
+                        "connectionName": "shared_commondataserviceforapps",
+                        "operationId": "CreateRecord"
+                      },
+                      "parameters": {
+                        "entityName": "ap_invoices",
+                        "item/ap_status": 100000001
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Catch": {
+      "runAfter": {
+        "Try": [
+          "Failed",
+          "TimedOut"
+        ]
+      },
+      "type": "Scope",
+      "description": "Runs only when the Try scope fails or times out.",
+      "actions": {
+        "Call_Log_Error_child_flow": {
+          "runAfter": {},
+          "type": "Workflow",
+          "inputs": {
+            "host": {
+              "workflowReferenceName": "ap_LogError"
+            },
+            "body": {
+              "runId": "@workflow()['run']['name']",
+              "failedAction": "@result('Try')",
+              "recipients": "@parameters('ap_ErrorAlertRecipients')"
+            }
+          }
+        }
+      }
+    },
+    "Finally": {
+      "runAfter": {
+        "Catch": [
+          "Succeeded",
+          "Skipped"
+        ]
+      },
+      "type": "Scope",
+      "description": "Runs on every outcome. Clears any record left in Processing so nothing is stranded.",
+      "actions": {
+        "Reset_stranded_processing_rows": {
+          "runAfter": {},
+          "type": "OpenApiConnection",
+          "inputs": {
+            "host": {
+              "connectionName": "shared_commondataserviceforapps",
+              "operationId": "ListRecords"
+            },
+            "parameters": {
+              "entityName": "ap_invoices",
+              "$filter": "ap_status eq 100000000"
+            }
+          }
+        },
+        "Send_run_telemetry": {
+          "runAfter": {
+            "Reset_stranded_processing_rows": [
+              "Succeeded",
+              "Failed"
+            ]
+          },
+          "type": "Http",
+          "inputs": {
+            "method": "POST",
+            "uri": "@parameters('ap_AppInsightsEndpoint')",
+            "body": {
+              "runId": "@workflow()['run']['name']",
+              "outcome": "@result('Try')[0]['status']",
+              "startedAt": "@workflow()['run']['startTime']"
+            }
+          },
+          "runtimeConfiguration": {
+            "staticResult": {
+              "staticResultOptions": "Disabled"
+            }
+          }
+        }
+      }
+    }
+  },
+  "outputs": {}
+}

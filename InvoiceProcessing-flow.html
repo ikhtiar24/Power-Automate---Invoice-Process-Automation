@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Invoice Processing Flow</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background: #f4f7fb;
+      color: #18243a;
+    }
+
+    * { box-sizing: border-box; }
+
+    body { margin: 0; }
+
+    header {
+      padding: 24px clamp(20px, 5vw, 64px) 18px;
+      background: #fff;
+      border-bottom: 1px solid #dce4ef;
+    }
+
+    h1 { margin: 0 0 6px; font-size: clamp(22px, 3vw, 32px); }
+    header p { margin: 0; color: #53627a; }
+
+    main { padding: 24px; overflow: auto; }
+
+    .canvas {
+      display: block;
+      width: min(100%, 1180px);
+      min-width: 860px;
+      height: auto;
+      margin: 0 auto;
+      background: #fff;
+      border: 1px solid #dce4ef;
+      border-radius: 16px;
+      box-shadow: 0 8px 28px #26395812;
+    }
+
+    .node rect, .node polygon { stroke-width: 2; }
+    .node text { fill: #18243a; font-size: 16px; text-anchor: middle; }
+    .node .sub { fill: #53627a; font-size: 13px; }
+    .trigger rect { fill: #eaf3ff; stroke: #4385d1; }
+    .process rect { fill: #f7f9fc; stroke: #9aabc1; }
+    .success rect { fill: #eaf8f0; stroke: #51a878; }
+    .decision polygon { fill: #fff8e7; stroke: #d6a33b; }
+    .manual rect { fill: #fff4e8; stroke: #df9144; }
+    .error rect { fill: #fff0f0; stroke: #d66b6b; }
+    .finally rect { fill: #f0edff; stroke: #8771c6; }
+    .connector {
+      fill: none;
+      stroke: #71829a;
+      stroke-width: 2.5;
+      marker-end: url(#arrow);
+    }
+    .connector.dashed { stroke-dasharray: 7 6; }
+    .branch-label { fill: #53627a; font-size: 13px; font-weight: 600; }
+    .scope {
+      fill: #fbfcfe;
+      stroke: #9aabc1;
+      stroke-width: 2;
+      stroke-dasharray: 9 7;
+    }
+    .scope-title { fill: #43546d; font-size: 16px; font-weight: 700; }
+    .parallel {
+      fill: #f8faff;
+      stroke: #8ca5c6;
+      stroke-width: 2;
+      stroke-dasharray: 6 5;
+    }
+    .note { fill: #53627a; font-size: 12px; }
+
+    @media (max-width: 700px) {
+      main { padding: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Invoice Processing</h1>
+    <p>Logic Apps workflow · email intake, AI extraction, approval, escalation, and recovery</p>
+  </header>
+  <main>
+    <svg class="canvas" viewBox="0 0 1180 1850" role="img" aria-labelledby="diagram-title diagram-description">
+      <title id="diagram-title">Invoice Processing workflow diagram</title>
+      <desc id="diagram-description">
+        The workflow monitors invoice emails, filters PDF attachments, extracts invoice fields,
+        sends high-confidence invoices for approval, routes low-confidence invoices to manual
+        review, escalates on SLA timeout, and handles failures and final telemetry.
+      </desc>
+      <defs>
+        <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+          <path d="M0,0 L10,5 L0,10 Z" fill="#71829a"></path>
+        </marker>
+      </defs>
+
+      <g class="node trigger">
+        <rect x="390" y="30" width="400" height="76" rx="16"></rect>
+        <text x="590" y="62">New invoice email</text>
+        <text class="sub" x="590" y="85">Inbox · subject contains “Invoice” · attachments</text>
+      </g>
+      <path class="connector" d="M590 106 V137"></path>
+
+      <g class="node process">
+        <rect x="430" y="140" width="320" height="58" rx="12"></rect>
+        <text x="590" y="176">Initialize run context</text>
+      </g>
+      <path class="connector" d="M590 198 V225"></path>
+
+      <rect class="scope" x="45" y="225" width="1090" height="1230" rx="20"></rect>
+      <text class="scope-title" x="70" y="255">TRY · Process each invoice PDF</text>
+
+      <g class="node process">
+        <rect x="430" y="275" width="320" height="64" rx="12"></rect>
+        <text x="590" y="303">Filter PDF attachments</text>
+        <text class="sub" x="590" y="325">Keep filenames ending in .pdf</text>
+      </g>
+      <path class="connector" d="M590 339 V366"></path>
+
+      <g class="node process">
+        <rect x="430" y="369" width="320" height="64" rx="12"></rect>
+        <text x="590" y="397">For each PDF · one at a time</text>
+        <text class="sub" x="590" y="419">Sequential processing</text>
+      </g>
+      <path class="connector" d="M590 433 V460"></path>
+
+      <g class="node process">
+        <rect x="430" y="463" width="320" height="68" rx="12"></rect>
+        <text x="590" y="492">Extract invoice fields</text>
+        <text class="sub" x="590" y="515">AI model predicts invoice data + confidence</text>
+      </g>
+      <path class="connector" d="M590 531 V565"></path>
+
+      <g class="node decision">
+        <polygon points="590,565 710,625 590,685 470,625"></polygon>
+        <text x="590" y="620">Confidence ≥</text>
+        <text x="590" y="641">configured threshold?</text>
+      </g>
+
+      <path class="connector" d="M470 625 H270 V711"></path>
+      <text class="branch-label" x="316" y="614">No</text>
+      <g class="node manual">
+        <rect x="105" y="714" width="330" height="76" rx="12"></rect>
+        <text x="270" y="744">Queue for manual review</text>
+        <text class="sub" x="270" y="767">Human corrects pre-filled invoice data</text>
+      </g>
+      <path class="connector" d="M710 625 H875 V711"></path>
+      <text class="branch-label" x="774" y="614">Yes</text>
+
+      <g class="node success">
+        <rect x="715" y="714" width="320" height="64" rx="12"></rect>
+        <text x="875" y="742">Create invoice record</text>
+        <text class="sub" x="875" y="764">Status: Processing</text>
+      </g>
+      <path class="connector" d="M875 778 V800"></path>
+      <g class="node process">
+        <rect x="715" y="803" width="320" height="64" rx="12"></rect>
+        <text x="875" y="831">Resolve approver</text>
+        <text class="sub" x="875" y="853">Child flow returns approver + SLA deadline</text>
+      </g>
+      <path class="connector" d="M875 867 V893"></path>
+
+      <rect class="parallel" x="525" y="895" width="610" height="155" rx="15"></rect>
+      <text class="scope-title" x="550" y="922">APPROVAL WITH SLA · Parallel actions</text>
+      <g class="node process">
+        <rect x="555" y="940" width="255" height="82" rx="12"></rect>
+        <text x="682" y="971">Start and wait</text>
+        <text class="sub" x="682" y="994">for approval response</text>
+      </g>
+      <g class="node process">
+        <rect x="850" y="940" width="255" height="82" rx="12"></rect>
+        <text x="977" y="971">Wait until</text>
+        <text class="sub" x="977" y="994">SLA deadline</text>
+      </g>
+      <path class="connector" d="M875 867 H1148 V980 H1108"></path>
+      <path class="connector" d="M875 867 H510 V980 H555"></path>
+      <path class="connector" d="M830 1050 V1074"></path>
+      <path class="connector" d="M1135 972 H1150 V1096 H1095"></path>
+
+      <g class="node decision">
+        <polygon points="830,1075 950,1135 830,1195 710,1135"></polygon>
+        <text x="830" y="1130">SLA timeout?</text>
+        <text class="sub" x="830" y="1152">Check scope result</text>
+      </g>
+      <path class="connector" d="M710 1135 H360 V1220"></path>
+      <text class="branch-label" x="470" y="1124">Yes</text>
+      <g class="node manual">
+        <rect x="195" y="1223" width="330" height="66" rx="12"></rect>
+        <text x="360" y="1252">Notify manager of SLA breach</text>
+        <text class="sub" x="360" y="1274">Escalation child flow</text>
+      </g>
+      <path class="connector" d="M950 1135 H1010 V1220"></path>
+      <text class="branch-label" x="968" y="1124">No</text>
+      <g class="node process">
+        <rect x="850" y="1223" width="320" height="66" rx="12"></rect>
+        <text x="1010" y="1252">Switch on approval outcome</text>
+        <text class="sub" x="1010" y="1274">Approve · Reject · default</text>
+      </g>
+
+      <path class="connector" d="M1010 1289 V1330 H820 V1354"></path>
+      <path class="connector" d="M1010 1330 H1040 V1354"></path>
+      <g class="node success">
+        <rect x="680" y="1357" width="280" height="64" rx="12"></rect>
+        <text x="820" y="1385">Set status: Approved</text>
+        <text class="sub" x="820" y="1407">Dataverse invoice record</text>
+      </g>
+      <g class="node error">
+        <rect x="970" y="1357" width="200" height="64" rx="12"></rect>
+        <text x="1070" y="1385">Set status:</text>
+        <text class="sub" x="1070" y="1407">Rejected</text>
+      </g>
+      <text class="note" x="590" y="1441" text-anchor="middle">Try scope ends · success/skipped continues to Finally</text>
+
+      <path class="connector dashed" d="M590 1455 V1491"></path>
+      <text class="branch-label" x="607" y="1480">Failed / timed out</text>
+      <path class="connector dashed" d="M1135 1455 V1639 H908"></path>
+      <text class="branch-label" x="1010" y="1478">Succeeded / skipped</text>
+
+      <g class="node error">
+        <rect x="275" y="1495" width="630" height="72" rx="12"></rect>
+        <text x="590" y="1525">CATCH · On failure or timeout</text>
+        <text class="sub" x="590" y="1549">Call error-logging child flow with run details and alert recipients</text>
+      </g>
+      <path class="connector" d="M590 1567 V1600"></path>
+
+      <g class="node finally">
+        <rect x="275" y="1603" width="630" height="72" rx="12"></rect>
+        <text x="590" y="1633">FINALLY · Runs on every outcome</text>
+        <text class="sub" x="590" y="1657">Then send run outcome and start time as telemetry</text>
+      </g>
+      <path class="connector" d="M590 1675 V1708"></path>
+
+      <g class="node trigger">
+        <rect x="390" y="1711" width="400" height="66" rx="16"></rect>
+        <text x="590" y="1740">Workflow run complete</text>
+        <text class="sub" x="590" y="1762">Telemetry sent</text>
+      </g>
+
+      <text class="note" x="590" y="1815" text-anchor="middle">
+        Diagram based on InvoiceProcessing.flow-definition.json
+      </text>
+    </svg>
+  </main>
+</body>
+</html>
